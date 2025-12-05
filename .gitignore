@@ -34,6 +34,14 @@ build/
 
 ### VS Code ###
 .vscode/
+# Local History for VS Code
+.history/
 
 ### Mac OS ###
 .DS_Store
+.localized
+.Spotlight-V100
+.Trashes
+._*
+.VolumeIcon.icns
+.fseventsd

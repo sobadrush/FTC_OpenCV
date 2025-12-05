@@ -5,6 +5,7 @@ package com.nanshan;
  * @date 2025/12/5
  */
 
+import lombok.extern.slf4j.Slf4j;
 import org.opencv.core.Mat;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.videoio.VideoCapture;
@@ -19,6 +20,7 @@ import java.awt.image.DataBufferByte;
  * OpenCV 攝影機控制範例程式
  * 展示如何使用 OpenCV 擷取攝影機影像並顯示在視窗中
  */
+@Slf4j
 public class OpenCVCameraDemo {
 
     private VideoCapture camera;
@@ -70,7 +72,7 @@ public class OpenCVCameraDemo {
      */
     public void startCamera() {
         if (isRunning) {
-            System.out.println("攝影機已經在運作中");
+            log.info("攝影機已經在運作中");
             return;
         }
 
@@ -102,12 +104,12 @@ public class OpenCVCameraDemo {
                 try {
                     Thread.sleep(33); // 約 30 FPS
                 } catch (InterruptedException e) {
-                    e.printStackTrace();
+                    log.error("相機禎數讀取發生錯誤", e);
                 }
             }
         }).start();
 
-        System.out.println("攝影機已啟動");
+        log.info("攝影機已啟動");
     }
 
     /**
@@ -124,7 +126,7 @@ public class OpenCVCameraDemo {
             camera.release();
         }
 
-        System.out.println("攝影機已停止");
+        log.info("攝影機已停止");
     }
 
     /**
@@ -143,7 +145,7 @@ public class OpenCVCameraDemo {
         if (camera.read(capturedFrame)) {
             String filename = "capture_" + System.currentTimeMillis() + ".jpg";
             Imgcodecs.imwrite(filename, capturedFrame);
-            System.out.println("照片已儲存: " + filename);
+            log.info("照片已儲存: {}", filename);
             JOptionPane.showMessageDialog(frame,
                     "照片已儲存: " + filename,
                     "成功",
