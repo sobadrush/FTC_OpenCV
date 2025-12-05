@@ -11,16 +11,23 @@
 - **啟動/停止攝影機**: 開始或停止影像的擷取。
 - **拍照**: 從當前的攝影機畫面擷取一張靜態圖片並儲存為 JPG 檔案。預設儲存於 `capture_photo/` 目錄下。
 - **設定存檔目錄**: 可自訂拍照後的存檔路徑。
+- **人臉偵測**: 使用 OpenCV DNN 模組 (ResNet-10 SSD) 進行即時人臉偵測。
 
-## 畫面截圖
+## Demo 畫面
 
+### 一般模式
 ![Demo Screenshot](readme_pics/demo_01.png)
+
+### 人臉辨識功能
+![Face Detection Demo](readme_pics/demo_02.png)
 
 ## 使用技術
 
 - **Java**: 21
 - **Maven**: 專案管理與建構
-- **OpenCV**: 影像處理函式庫 (via `org.openpnp:opencv`)
+- **OpenCV**: 4.9.0
+  - 核心影像處理 (via `org.openpnp:opencv`)
+  - **DNN 模組**: 使用 ResNet-10 SSD 模型 (Caffe Framework) 進行人臉偵測
 - **SLF4J + Log4j2**: 日誌記錄框架
 - **Lombok**: 簡化樣板程式碼
 - **Swing**: 圖形化使用者介面 (GUI)
@@ -29,7 +36,7 @@
 
 - **JDK 21** 或更高版本
 - **Maven** 3.6 或更高版本
-- 一個可用的**網路攝影機**
+- 一個可用的**攝影機**
 
 ## 如何執行
 
@@ -72,6 +79,7 @@ FTC_OpenCV/
     │   │       ├── App.java              # (未使用) 簡單的主程式
     │   │       └── OpenCVCameraDemo.java # 核心應用程式邏輯
     │   └── resources/
+    │       ├── models/             # 人臉偵測模型 (Caffe ResNet-10 SSD)
     │       └── log4j2.xml          # Log4j2 設定檔
     └── test/
         └── ...
