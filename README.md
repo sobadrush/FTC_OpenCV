@@ -64,6 +64,8 @@
 
 ## 專案結構
 
+> **注意**: Maven groupId 使用 `com.nanshan`，但實際 Java 套件名稱為 `com.telearn`。這是專案的設定方式，兩者可以不同。
+
 ```
 FTC_OpenCV/
 ├── ap_logs/              # 日誌檔案儲存目錄 (由 .gitignore 排除)
@@ -161,9 +163,9 @@ flowchart TD
     
     CaptureLoop --> CheckFace{人臉偵測<br/>是否啟用?}
     CheckFace -->|是| DetectFace[執行人臉偵測]
-    CheckFace -->|否| Display
     DetectFace --> DrawBox[繪製偵測框]
     DrawBox --> Display[更新顯示畫面]
+    CheckFace -->|否| Display[更新顯示畫面]
     Display --> Sleep[延遲 33ms]
     Sleep --> CheckRunning{isRunning?}
     CheckRunning -->|是| CaptureLoop
