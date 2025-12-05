@@ -15,6 +15,7 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
+import java.io.File;
 
 /**
  * OpenCV 攝影機控制範例程式
@@ -27,6 +28,7 @@ public class OpenCVCameraDemo {
     private JFrame frame;
     private JLabel imageLabel;
     private volatile boolean isRunning = false;
+    private String saveDirectory = "capture_photo";
 
     // 載入 OpenCV 原生函式庫
     static {
@@ -54,17 +56,44 @@ public class OpenCVCameraDemo {
         JButton startButton = new JButton("開始");
         JButton stopButton = new JButton("停止");
         JButton captureButton = new JButton("拍照");
+        JButton setDirButton = new JButton("設定存檔目錄");
 
         startButton.addActionListener(e -> startCamera());
         stopButton.addActionListener(e -> stopCamera());
         captureButton.addActionListener(e -> captureImage());
+        setDirButton.addActionListener(e -> chooseSaveDirectory());
 
         controlPanel.add(startButton);
         controlPanel.add(stopButton);
         controlPanel.add(captureButton);
+        controlPanel.add(setDirButton);
         frame.add(controlPanel, BorderLayout.SOUTH);
 
         frame.setVisible(true);
+    }
+
+    /**
+     * 選擇存檔目錄
+     */
+    private void chooseSaveDirectory() {
+        JFileChooser fileChooser = new JFileChooser();
+        fileChooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        fileChooser.setDialogTitle("選擇照片存檔目錄");
+        
+        File currentDir = new File(saveDirectory);
+        if (currentDir.exists()) {
+            fileChooser.setCurrentDirectory(currentDir);
+        } else {
+            fileChooser.setCurrentDirectory(new File("."));
+        }
+
+        int result = fileChooser.showOpenDialog(frame);
+        if (result == JFileChooser.APPROVE_OPTION) {
+            File selectedFile = fileChooser.getSelectedFile();
+            saveDirectory = selectedFile.getAbsolutePath();
+            log.info("存檔目錄已更新為: {}", saveDirectory);
+            JOptionPane.showMessageDialog(frame, "存檔目錄已設定為: " + saveDirectory);
+        }
     }
 
     /**
@@ -143,11 +172,20 @@ public class OpenCVCameraDemo {
 
         Mat capturedFrame = new Mat();
         if (camera.read(capturedFrame)) {
+            // 確保目錄存在
+            File dir = new File(saveDirectory);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+
             String filename = "capture_" + System.currentTimeMillis() + ".jpg";
-            Imgcodecs.imwrite(filename, capturedFrame);
-            log.info("照片已儲存: {}", filename);
+            File fileToSave = new File(dir, filename);
+            String absolutePath = fileToSave.getAbsolutePath();
+
+            Imgcodecs.imwrite(absolutePath, capturedFrame);
+            log.info("照片已儲存: {}", absolutePath);
             JOptionPane.showMessageDialog(frame,
-                    "照片已儲存: " + filename,
+                    "照片已儲存: " + absolutePath,
                     "成功",
                     JOptionPane.INFORMATION_MESSAGE);
         }
