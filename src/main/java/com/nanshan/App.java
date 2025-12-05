@@ -1,11 +1,20 @@
 package com.nanshan;
 
+import javax.swing.*;
+
 /**
  * Hello world!
  *
  */
 public class App {
+
+    /**
+     * 主程式進入點
+     */
     public static void main(String[] args) {
-        System.out.println("Hello World!");
+        SwingUtilities.invokeLater(() -> {
+            OpenCVCameraDemo demo = new OpenCVCameraDemo();
+        });
     }
+
 }

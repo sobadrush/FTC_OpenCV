@@ -1,6 +1,6 @@
 # FTC_OpenCV - OpenCV 攝影機展示專案
 
-這是一個簡單的 Java Swing 應用程式，用以展示如何使用 OpenCV 從網路攝影機擷取即時影像。
+這是一個簡單的 Java Swing 應用程式，用以展示如何使用 OpenCV 從攝影機擷取即時影像。
 
 ## 版本
 
@@ -9,11 +9,16 @@
 ## 功能
 
 - **啟動/停止攝影機**: 開始或停止影像的擷取。
-- **拍照**: 從當前的攝影機畫面擷取一張靜態圖片並儲存為 JPG 檔案。
+- **拍照**: 從當前的攝影機畫面擷取一張靜態圖片並儲存為 JPG 檔案。預設儲存於 `capture_photo/` 目錄下。
+- **設定存檔目錄**: 可自訂拍照後的存檔路徑。
+
+## 畫面截圖
+
+![Demo Screenshot](readme_pics/demo_01.png)
 
 ## 使用技術
 
-- **Java**: 11
+- **Java**: 21
 - **Maven**: 專案管理與建構
 - **OpenCV**: 影像處理函式庫 (via `org.openpnp:opencv`)
 - **SLF4J + Log4j2**: 日誌記錄框架
@@ -22,7 +27,7 @@
 
 ## 環境需求
 
-- **JDK 11** 或更高版本
+- **JDK 21** 或更高版本
 - **Maven** 3.6 或更高版本
 - 一個可用的**網路攝影機**
 
@@ -55,6 +60,8 @@
 ```
 FTC_OpenCV/
 ├── ap_logs/              # 日誌檔案儲存目錄 (由 .gitignore 排除)
+├── capture_photo/        # 預設照片存檔目錄
+├── readme_pics/          # 說明文件圖片目錄
 ├── pom.xml               # Maven 專案設定檔
 ├── .gitignore            # Git 忽略清單
 ├── README.md             # 專案說明文件

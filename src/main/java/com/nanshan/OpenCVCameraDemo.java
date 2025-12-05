@@ -220,12 +220,4 @@ public class OpenCVCameraDemo {
         return image;
     }
 
-    /**
-     * 主程式進入點
-     */
-    public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> {
-            OpenCVCameraDemo demo = new OpenCVCameraDemo();
-        });
-    }
 }
