@@ -221,7 +221,7 @@ graph TB
     subgraph "系統資源層"
         Camera[實體攝影機]
         Models[DNN 模型檔案<br/>deploy.prototxt<br/>res10_300x300_ssd_iter_140000.caffemodel]
-        Files[檔案系統<br/>capture_photo/]
+        Files[檔案系統<br/>capture_photo/<br/>ap_logs/]
     end
     
     subgraph "支援服務層"
