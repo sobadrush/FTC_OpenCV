@@ -45,3 +45,6 @@ build/
 ._*
 .VolumeIcon.icns
 .fseventsd
+
+# Log directory
+ap_logs/

@@ -8,15 +8,19 @@
         <Console name="Console" target="SYSTEM_OUT">
             <PatternLayout pattern="${LOG_PATTERN}"/>
         </Console>
+        <!-- 主日誌檔案，存放在 ap_logs 目錄下 -->
         <RollingFile name="RollingFile"
                      fileName="${LOG_DIR}/opencv.log"
-                     filePattern="${LOG_DIR}/opencv-%i.log.gz">
+                     filePattern="${LOG_DIR}/opencv-%i.log.gz"> <!-- 輪替後的日誌檔案，會壓縮成 .gz 格式 -->
             <PatternLayout>
                 <Pattern>${LOG_PATTERN}</Pattern>
             </PatternLayout>
             <Policies>
+                <!-- 當日誌檔案達到 10MB 時觸發輪替 -->
                 <SizeBasedTriggeringPolicy size="10 MB"/>
             </Policies>
+            <!-- 最多保留 10 個壓縮的日誌檔案 (.gz 格式) -->
+            <!-- %i 是一個計數器，會從 1 開始遞增，直到 max 設定的數值為止 -->
             <DefaultRolloverStrategy max="10"/>
         </RollingFile>
     </Appenders>
