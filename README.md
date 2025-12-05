@@ -64,8 +64,6 @@
 
 ## 專案結構
 
-> **注意**: Maven groupId 使用 `com.nanshan`，但實際 Java 套件名稱為 `com.telearn`。這是專案的設定方式，兩者可以不同。
-
 ```
 FTC_OpenCV/
 ├── ap_logs/              # 日誌檔案儲存目錄 (由 .gitignore 排除)
