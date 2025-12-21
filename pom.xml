@@ -72,6 +72,13 @@
             <version>${log4j.version}</version>
         </dependency>
 
+        <!-- JSON 處理 (資料匯出) -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.10.1</version>
+        </dependency>
+
     </dependencies>
 
     <build>
@@ -95,8 +102,25 @@
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.1.0</version>
+                <executions>
+                    <!-- 預設執行：FTC 比賽分析器 -->
+                    <execution>
+                        <id>default</id>
+                        <configuration>
+                            <mainClass>com.telearn.ftc.ui.FTCMainWindow</mainClass>
+                        </configuration>
+                    </execution>
+                    <!-- 原始攝影機展示 -->
+                    <execution>
+                        <id>camera-demo</id>
+                        <configuration>
+                            <mainClass>com.telearn.OpenCVCameraDemo</mainClass>
+                        </configuration>
+                    </execution>
+                </executions>
                 <configuration>
-                    <mainClass>com.telearn.OpenCVCameraDemo</mainClass>
+                    <!-- 預設主類別：FTC 比賽分析器 -->
+                    <mainClass>com.telearn.ftc.ui.FTCMainWindow</mainClass>
                 </configuration>
             </plugin>
         </plugins>
