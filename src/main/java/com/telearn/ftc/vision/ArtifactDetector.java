@@ -11,33 +11,32 @@ import java.util.List;
 
 /**
  * 文物偵測器
- * 使用 HSV 顏色空間辨識紫色與綠色文物
+ * 使用 HSV 顏色空間辨識綠色與紫色文物 (FTC 2025 INTO THE DEEP)
  */
 @Slf4j
 public class ArtifactDetector {
 
-    // ===== 紫色文物 HSV 範圍 =====
-    // 紫色在 HSV 中的色相 (Hue) 約為 130-160
-    private static final Scalar PURPLE_LOWER = new Scalar(130, 50, 50);
-    private static final Scalar PURPLE_UPPER = new Scalar(165, 255, 255);
+    // ===== 綠色/藍綠色球 HSV 範圍 =====
+    // 影片中的球偏藍綠色
+    private static final Scalar GREEN_LOWER = new Scalar(40, 80, 60);
+    private static final Scalar GREEN_UPPER = new Scalar(100, 255, 255);
 
-    // ===== 綠色文物 HSV 範圍 =====
-    // 綠色在 HSV 中的色相 (Hue) 約為 40-80
-    private static final Scalar GREEN_LOWER = new Scalar(35, 50, 50);
-    private static final Scalar GREEN_UPPER = new Scalar(85, 255, 255);
+    // ===== 紫色/粉紅色球 HSV 範圍 =====
+    private static final Scalar PURPLE_LOWER = new Scalar(130, 50, 60);
+    private static final Scalar PURPLE_UPPER = new Scalar(175, 255, 255);
 
     // ===== 偵測參數 =====
-    /** 最小輪廓面積 (像素平方) */
-    private static final double MIN_CONTOUR_AREA = 500;
+    /** 最小輪廓面積 */
+    private static final double MIN_CONTOUR_AREA = 300;
 
     /** 最大輪廓面積 */
     private static final double MAX_CONTOUR_AREA = 50000;
 
-    /** 最小圓形度 (0-1, 1=完美圓形) */
-    private static final double MIN_CIRCULARITY = 0.3;
+    /** 最小圓形度 - 降低以偵測更多形狀 */
+    private static final double MIN_CIRCULARITY = 0.25;
 
     /** 信心度閾值 */
-    private static final double CONFIDENCE_THRESHOLD = 0.6;
+    private static final double CONFIDENCE_THRESHOLD = 0.35;
 
     // 可重用的 Mat 物件 (避免頻繁記憶體分配)
     private Mat hsvMat = new Mat();
@@ -74,7 +73,7 @@ public class ArtifactDetector {
         List<DetectedArtifact> purpleArtifacts = detectFromMask(purpleMask, ArtifactType.PURPLE);
         artifacts.addAll(purpleArtifacts);
 
-        // 偵測綠色文物
+        // 偵測綠色文物 (Green Sample)
         Core.inRange(hsvMat, GREEN_LOWER, GREEN_UPPER, greenMask);
         List<DetectedArtifact> greenArtifacts = detectFromMask(greenMask, ArtifactType.GREEN);
         artifacts.addAll(greenArtifacts);
