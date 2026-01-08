@@ -595,7 +595,7 @@ public class FTCMainWindow extends JFrame {
 
             // 檢查紅方球門
             if (redGoal != null && redGoal.contains(center)) {
-                if (redRamp.addArtifact(artifact.getType())) {
+                if (redRamp.addArtifact(artifact.getType(), center)) {
                     addEventLog("紅方 CLASSIFIED +3分 (" + artifact.getType().getDisplayName() + ")");
                     scoringEngine.scoreClassified(Alliance.RED, artifact.getType());
                     updateScoreDisplay();
@@ -604,7 +604,7 @@ public class FTCMainWindow extends JFrame {
 
             // 檢查藍方球門
             if (blueGoal != null && blueGoal.contains(center)) {
-                if (blueRamp.addArtifact(artifact.getType())) {
+                if (blueRamp.addArtifact(artifact.getType(), center)) {
                     addEventLog("藍方 CLASSIFIED +3分 (" + artifact.getType().getDisplayName() + ")");
                     scoringEngine.scoreClassified(Alliance.BLUE, artifact.getType());
                     updateScoreDisplay();
@@ -828,35 +828,73 @@ public class FTCMainWindow extends JFrame {
     }
 
     /**
-     * 斜坡狀態
+     * 斜坡狀態 - 追蹤進入球門的文物
      */
     private static class RampState {
         Alliance alliance;
         ArtifactType[] artifacts = new ArtifactType[9];
         int count = 0;
-        java.util.Set<String> scoredPositions = new java.util.HashSet<>();
+
+        // 位置追蹤：記錄已計分文物的位置，防止同一個球重複計分
+        java.util.List<org.opencv.core.Point> scoredPositions = new java.util.ArrayList<>();
+        private static final double POSITION_THRESHOLD = 30.0; // 像素距離閾值
+
+        // 時間閘門：同一個球在短時間內不重複計分
+        private long lastScoringTime = 0;
+        private static final long SCORING_COOLDOWN_MS = 1000; // 1秒冷卻時間
 
         RampState(Alliance alliance) {
             this.alliance = alliance;
         }
 
-        boolean addArtifact(ArtifactType type) {
+        /**
+         * 嘗試新增文物到斜坡
+         * 
+         * @param type     文物類型
+         * @param position 文物位置 (可為 null)
+         * @return 是否成功新增 (避免重複)
+         */
+        boolean addArtifact(ArtifactType type, org.opencv.core.Point position) {
+            // 檢查斜坡是否已滿
             if (count >= 9)
                 return false;
 
-            // 使用簡單的時間戳防止重複計分
-            String key = System.currentTimeMillis() / 500 + ""; // 0.5秒內不重複
-            if (scoredPositions.contains(key))
+            // 檢查冷卻時間
+            long now = System.currentTimeMillis();
+            if (now - lastScoringTime < SCORING_COOLDOWN_MS) {
                 return false;
-            scoredPositions.add(key);
-
-            // 清理舊的 key (保留最近 20 個)
-            if (scoredPositions.size() > 20) {
-                scoredPositions.clear();
             }
 
+            // 如果有位置資訊，檢查是否已經在附近計分過
+            if (position != null) {
+                for (org.opencv.core.Point scored : scoredPositions) {
+                    double dist = Math.sqrt(
+                            Math.pow(position.x - scored.x, 2) +
+                                    Math.pow(position.y - scored.y, 2));
+                    if (dist < POSITION_THRESHOLD) {
+                        return false; // 太近，可能是同一個球
+                    }
+                }
+                // 記錄新位置
+                scoredPositions.add(new org.opencv.core.Point(position.x, position.y));
+
+                // 清理舊位置 (保留最近 20 個)
+                while (scoredPositions.size() > 20) {
+                    scoredPositions.remove(0);
+                }
+            }
+
+            // 新增到斜坡
             artifacts[count++] = type;
+            lastScoringTime = now;
             return true;
+        }
+
+        /**
+         * 簡化版新增 (無位置追蹤)
+         */
+        boolean addArtifact(ArtifactType type) {
+            return addArtifact(type, null);
         }
 
         int getCount() {
@@ -867,15 +905,18 @@ public class FTCMainWindow extends JFrame {
             return artifacts;
         }
 
+        /**
+         * 計算與主題匹配的數量
+         */
         int countPatternMatches(Motif motif) {
-            if (motif == Motif.UNKNOWN || count < 3)
+            if (motif == Motif.UNKNOWN || count < 1)
                 return 0;
 
             char[] pattern = motif.getPattern().toCharArray();
             int matches = 0;
 
             for (int i = 0; i < Math.min(3, count); i++) {
-                if (artifacts[i] != null) {
+                if (artifacts[i] != null && i < pattern.length) {
                     char expected = pattern[i];
                     char actual = artifacts[i] == ArtifactType.PURPLE ? 'P' : 'G';
                     if (expected == actual)
@@ -889,6 +930,7 @@ public class FTCMainWindow extends JFrame {
             artifacts = new ArtifactType[9];
             count = 0;
             scoredPositions.clear();
+            lastScoringTime = 0;
         }
     }
 }
