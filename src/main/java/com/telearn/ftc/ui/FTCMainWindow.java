@@ -501,6 +501,30 @@ public class FTCMainWindow extends JFrame {
         // 5. OCR 讀取轉播分數
         scoreOCR.detect(frame);
 
+        // 更新 OCR 分數顯示
+        SwingUtilities.invokeLater(() -> {
+            if (scoreOCR.hasValidResults()) {
+                redOcrLabel.setText(String.valueOf(scoreOCR.getRedScore()));
+                blueOcrLabel.setText(String.valueOf(scoreOCR.getBlueScore()));
+                redOcrLabel.setForeground(Color.BLACK);
+                blueOcrLabel.setForeground(Color.BLACK);
+
+                // 驗證計算分數與 OCR 分數是否一致
+                int calcRed = scoringEngine.getMatchState().getRedScore().getTotalScore();
+                int calcBlue = scoringEngine.getMatchState().getBlueScore().getTotalScore();
+                int ocrRed = scoreOCR.getRedScore();
+                int ocrBlue = scoreOCR.getBlueScore();
+
+                if (calcRed == ocrRed && calcBlue == ocrBlue) {
+                    validationLabel.setText("✓ 分數一致");
+                    validationLabel.setForeground(new Color(0, 128, 0));
+                } else {
+                    validationLabel.setText("✗ 分數不一致");
+                    validationLabel.setForeground(Color.RED);
+                }
+            }
+        });
+
         // 更新顯示
         updateVideoLabel(frame);
     }
