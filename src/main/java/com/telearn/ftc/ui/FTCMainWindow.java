@@ -538,25 +538,28 @@ public class FTCMainWindow extends JFrame {
             org.opencv.core.Point center = tag.getCenter();
             double tagSize = tag.getSize();
 
-            // 球門區域在 AprilTag 旁邊
-            int goalWidth = (int) (tagSize * 2);
-            int goalHeight = (int) (tagSize * 4);
+            // 球門開口區域 - 文物從這裡進入
+            // 球門在 AprilTag 的外側（左或右），並且在 AprilTag 下方
+            int goalWidth = (int) (tagSize * 1.5); // 球門寬度
+            int goalHeight = (int) (tagSize * 2); // 球門高度（開口區域）
 
             Rect goalBounds;
             if (tag.getId() == 20) {
-                // 藍方球門在左側
-                goalBounds = new Rect(
-                        Math.max(0, (int) (center.x - tagSize * 2 - goalWidth)),
-                        Math.max(0, (int) (center.y - goalHeight / 2)),
-                        goalWidth, goalHeight);
+                // 藍方球門在 AprilTag ID 20 的左側
+                // 球門開口位於 AprilTag 外側下方
+                int goalX = Math.max(0, (int) (center.x - tagSize * 2.5));
+                int goalY = (int) (center.y - tagSize * 0.5); // 稍微在 AprilTag 上方一點
+                goalBounds = new Rect(goalX, goalY, goalWidth, goalHeight);
                 blueGoal = new GoalArea(Alliance.BLUE, goalBounds, center);
+                log.debug("藍方球門區域: x={}, y={}, w={}, h={}", goalX, goalY, goalWidth, goalHeight);
             } else {
-                // 紅方球門在右側
-                goalBounds = new Rect(
-                        Math.min(frameWidth - goalWidth, (int) (center.x + tagSize * 2)),
-                        Math.max(0, (int) (center.y - goalHeight / 2)),
-                        goalWidth, goalHeight);
+                // 紅方球門在 AprilTag ID 24 的右側
+                int goalX = (int) (center.x + tagSize * 1.0);
+                int goalY = (int) (center.y - tagSize * 0.5);
+                goalX = Math.min(goalX, frameWidth - goalWidth);
+                goalBounds = new Rect(goalX, goalY, goalWidth, goalHeight);
                 redGoal = new GoalArea(Alliance.RED, goalBounds, center);
+                log.debug("紅方球門區域: x={}, y={}, w={}, h={}", goalX, goalY, goalWidth, goalHeight);
             }
         }
     }
@@ -566,16 +569,18 @@ public class FTCMainWindow extends JFrame {
      */
     private void drawGoalAreas(Mat frame) {
         if (redGoal != null) {
+            // 紅方球門 - 紅色半透明框
             Imgproc.rectangle(frame, redGoal.bounds, new Scalar(0, 0, 255), 2);
             Imgproc.putText(frame, "RED GOAL",
                     new org.opencv.core.Point(redGoal.bounds.x, redGoal.bounds.y - 10),
-                    Imgproc.FONT_HERSHEY_SIMPLEX, 0.6, new Scalar(0, 0, 255), 2);
+                    Imgproc.FONT_HERSHEY_SIMPLEX, 0.5, new Scalar(0, 0, 255), 2);
         }
         if (blueGoal != null) {
+            // 藍方球門 - 藍色半透明框
             Imgproc.rectangle(frame, blueGoal.bounds, new Scalar(255, 0, 0), 2);
             Imgproc.putText(frame, "BLUE GOAL",
                     new org.opencv.core.Point(blueGoal.bounds.x, blueGoal.bounds.y - 10),
-                    Imgproc.FONT_HERSHEY_SIMPLEX, 0.6, new Scalar(255, 0, 0), 2);
+                    Imgproc.FONT_HERSHEY_SIMPLEX, 0.5, new Scalar(255, 0, 0), 2);
         }
     }
 
