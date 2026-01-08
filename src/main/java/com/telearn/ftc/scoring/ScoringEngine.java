@@ -1,7 +1,6 @@
 package com.telearn.ftc.scoring;
 
 import com.telearn.ftc.model.*;
-import com.telearn.ftc.vision.ZoneDetector;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -30,18 +29,9 @@ public class ScoringEngine {
     // 事件紀錄
     private List<ScoreEvent> scoreEvents = new ArrayList<>();
 
-    // 區域偵測器 (用於判斷位置 - 預留供自動計分使用)
-    @SuppressWarnings("unused")
-    private ZoneDetector zoneDetector;
-
     public ScoringEngine() {
         this.matchState = new MatchState();
         log.info("計分引擎初始化完成");
-    }
-
-    public ScoringEngine(ZoneDetector zoneDetector) {
-        this();
-        this.zoneDetector = zoneDetector;
     }
 
     /**

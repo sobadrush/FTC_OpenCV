@@ -2,17 +2,9 @@ package com.telearn.ftc.ui;
 
 import com.telearn.ftc.model.*;
 import com.telearn.ftc.scoring.ScoringEngine;
-import com.telearn.ftc.strategy.CycleAnalyzer;
-import com.telearn.ftc.util.MatchDataExporter;
 import com.telearn.ftc.vision.*;
 import lombok.extern.slf4j.Slf4j;
-import org.opencv.core.Core;
-import org.opencv.core.Mat;
-import org.opencv.core.MatOfPoint;
-import org.opencv.core.Point;
-import org.opencv.core.Rect;
-import org.opencv.core.Scalar;
-import org.opencv.core.Size;
+import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 import org.opencv.videoio.VideoCapture;
@@ -20,7 +12,6 @@ import org.opencv.videoio.Videoio;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
-import javax.swing.border.TitledBorder;
 import java.awt.*;
 import java.awt.event.*;
 import java.awt.image.BufferedImage;
@@ -31,8 +22,11 @@ import java.util.Date;
 import java.util.List;
 
 /**
- * FTC 比賽分析器主視窗
- * 整合影像辨識、計分與策略分析功能
+ * FTC 比賽分析器主視窗 (重構版)
+ * 專注於：
+ * 1. 文物偵測與計分
+ * 2. OCR 讀取轉播畫面分數驗證
+ * 3. 斜坡狀態追蹤
  */
 @Slf4j
 public class FTCMainWindow extends JFrame {
@@ -44,26 +38,33 @@ public class FTCMainWindow extends JFrame {
 
     // ===== UI 元件 =====
     private JLabel videoLabel;
-    private ScoreboardPanel redScorePanel;
-    private ScoreboardPanel blueScorePanel;
     private JTextArea eventLogArea;
     private JLabel timeLabel;
-    private JLabel phaseLabel;
-    private JLabel motifLabel;
-    private JLabel rampLabel;
-    private JProgressBar rampProgressBar;
+
+    // 分數面板
+    private JLabel redScoreLabel; // 紅方計算分數
+    private JLabel redOcrLabel; // 紅方 OCR 分數
+    private JLabel blueScoreLabel; // 藍方計算分數
+    private JLabel blueOcrLabel; // 藍方 OCR 分數
+    private JLabel validationLabel; // 驗證狀態
+
+    // 斜坡狀態面板
+    private JPanel redRampPanel; // 紅方斜坡 (9格)
+    private JPanel blueRampPanel; // 藍方斜坡 (9格)
+    private JLabel redPatternLabel; // 紅方圖案匹配
+    private JLabel bluePatternLabel; // 藍方圖案匹配
+    private JLabel motifLabel; // 主題顯示
 
     // ===== 視訊相關 =====
     private VideoCapture camera;
     private volatile boolean isRunning = false;
     private volatile boolean isPaused = false;
-    private volatile boolean isSeeking = false; // 新增: 防止 seek 期間讀取
+    private volatile boolean isSeeking = false;
     private Thread captureThread;
     private String currentVideoPath = null;
     private int totalFrames = 0;
     private int currentFrame = 0;
-    private final Object videoLock = new Object(); // 新增: 執行緒安全鎖
-    private Mat lastProcessedFrame = null; // 保存最後處理的幀供標記用
+    private final Object videoLock = new Object();
 
     // ===== 影片控制元件 =====
     private JSlider videoSlider;
@@ -72,36 +73,24 @@ public class FTCMainWindow extends JFrame {
 
     // ===== 偵測器 =====
     private ArtifactDetector artifactDetector;
-    private RobotDetector robotDetector;
-    private ZoneDetector zoneDetector;
     private AprilTagDetector aprilTagDetector;
+    private ScoreOCR scoreOCR; // 新增：OCR 讀取器
 
     // ===== 分析引擎 =====
     private ScoringEngine scoringEngine;
-    private CycleAnalyzer cycleAnalyzer;
 
-    // ===== 設定 =====
-    private boolean showArtifacts = true;
-    private boolean showRobots = true;
-    private boolean showZones = false;
-    private boolean showAprilTags = true;
-    private boolean autoDetectMotif = true;
-    private boolean autoScoring = false;
-    private boolean isMarkingMode = false; // 是否正在標記機器人
-    private boolean isMarkingZoneMode = false; // 是否正在標記得分區
-    private com.telearn.ftc.model.Alliance currentMarkingAlliance = com.telearn.ftc.model.Alliance.RED; // 當前要標記的聯盟
+    // ===== 斜坡狀態 =====
+    private RampState redRamp;
+    private RampState blueRamp;
+    private Motif currentMotif = Motif.UNKNOWN;
 
-    // 得分區列表
-    private java.util.List<com.telearn.ftc.model.ScoringZone> scoringZones = new java.util.ArrayList<>();
-    // 已計分的文物位置 (使用位置追蹤避免重複計分)
-    private java.util.List<org.opencv.core.Point> scoredArtifactPositions = new java.util.ArrayList<>();
-    private static final double SCORED_POSITION_THRESHOLD = 50.0; // 距離閾值
+    // ===== 球門區域 =====
+    private GoalArea redGoal;
+    private GoalArea blueGoal;
 
     // 視窗尺寸
-    private static final int VIDEO_WIDTH = 640;
-    private static final int VIDEO_HEIGHT = 480;
-    private static final int DEFAULT_ROBOT_SIZE = 80; // 預設機器人標記大小
-    private static final int DEFAULT_ZONE_SIZE = 120; // 預設得分區大小
+    private static final int VIDEO_WIDTH = 960;
+    private static final int VIDEO_HEIGHT = 540;
 
     public FTCMainWindow() {
         initializeComponents();
@@ -113,46 +102,53 @@ public class FTCMainWindow extends JFrame {
      * 初始化元件
      */
     private void initializeComponents() {
+        // 偵測器
         artifactDetector = new ArtifactDetector();
-        robotDetector = new RobotDetector();
-        zoneDetector = new ZoneDetector();
         aprilTagDetector = new AprilTagDetector();
-        scoringEngine = new ScoringEngine(zoneDetector);
-        cycleAnalyzer = new CycleAnalyzer();
+        scoreOCR = new ScoreOCR();
+
+        // 計分引擎
+        scoringEngine = new ScoringEngine();
+
+        // 斜坡狀態
+        redRamp = new RampState(Alliance.RED);
+        blueRamp = new RampState(Alliance.BLUE);
+
+        // 球門區域 (待 AprilTag 偵測後設定)
+        redGoal = null;
+        blueGoal = null;
     }
 
     /**
      * 初始化 UI
      */
     private void initializeUI() {
-        setTitle("FTC 比賽分析器 v1.0 (INTO THE DEEP 2025)");
+        setTitle("FTC 2025-2026 DECODE 自動計分系統");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setLayout(new BorderLayout(10, 10));
+        setLayout(new BorderLayout());
 
         // 主面板
-        JPanel mainPanel = new JPanel(new BorderLayout(10, 10));
+        JPanel mainPanel = new JPanel(new BorderLayout(5, 5));
         mainPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
 
-        // 左側：影像顯示區
-        JPanel leftPanel = createVideoPanel();
-        mainPanel.add(leftPanel, BorderLayout.CENTER);
+        // 上方：影片控制
+        mainPanel.add(createControlPanel(), BorderLayout.NORTH);
 
-        // 右側：計分板與資訊
-        JPanel rightPanel = createInfoPanel();
-        mainPanel.add(rightPanel, BorderLayout.EAST);
+        // 中間：影片 + 資訊面板
+        JSplitPane centerSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
+        centerSplit.setLeftComponent(createVideoPanel());
+        centerSplit.setRightComponent(createInfoPanel());
+        centerSplit.setResizeWeight(0.75);
+        mainPanel.add(centerSplit, BorderLayout.CENTER);
 
-        // 底部：控制面板
-        JPanel bottomPanel = createControlPanel();
-        mainPanel.add(bottomPanel, BorderLayout.SOUTH);
+        // 下方：事件記錄
+        mainPanel.add(createEventLogPanel(), BorderLayout.SOUTH);
 
         add(mainPanel);
 
-        // 設定視窗
         pack();
-        setMinimumSize(new Dimension(1200, 700));
         setLocationRelativeTo(null);
 
-        // 視窗關閉時釋放資源
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
@@ -162,296 +158,65 @@ public class FTCMainWindow extends JFrame {
     }
 
     /**
-     * 建立影像顯示面板
+     * 建立控制面板
      */
-    private JPanel createVideoPanel() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBorder(new TitledBorder("即時影像"));
+    private JPanel createControlPanel() {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 5));
 
-        videoLabel = new JLabel();
-        videoLabel.setPreferredSize(new Dimension(VIDEO_WIDTH, VIDEO_HEIGHT));
-        videoLabel.setHorizontalAlignment(JLabel.CENTER);
-        videoLabel.setBackground(Color.BLACK);
-        videoLabel.setOpaque(true);
-        videoLabel.setText("攝影機未啟動");
-        panel.add(videoLabel, BorderLayout.CENTER);
+        // 載入影片
+        JButton loadBtn = new JButton("📂 載入影片");
+        loadBtn.addActionListener(e -> loadFile());
+        panel.add(loadBtn);
 
-        // 影像控制項
-        JPanel overlayControlPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-
-        JCheckBox showArtifactsChk = new JCheckBox("顯示文物", showArtifacts);
-        showArtifactsChk.addActionListener(e -> showArtifacts = showArtifactsChk.isSelected());
-
-        JCheckBox showRobotsChk = new JCheckBox("顯示機器人", showRobots);
-        showRobotsChk.addActionListener(e -> showRobots = showRobotsChk.isSelected());
-
-        JCheckBox showZonesChk = new JCheckBox("顯示區域", showZones);
-        showZonesChk.addActionListener(e -> showZones = showZonesChk.isSelected());
-
-        JCheckBox showAprilTagsChk = new JCheckBox("AprilTag", showAprilTags);
-        showAprilTagsChk.addActionListener(e -> showAprilTags = showAprilTagsChk.isSelected());
-
-        JCheckBox autoDetectMotifChk = new JCheckBox("自動偵測主題", autoDetectMotif);
-        autoDetectMotifChk.addActionListener(e -> autoDetectMotif = autoDetectMotifChk.isSelected());
-
-        // 聯盟選擇按鈕 (紅方/藍方)
-        JPanel alliancePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0));
-        JLabel allianceLabel = new JLabel("標記聯盟:");
-        JToggleButton redBtn = new JToggleButton("🔴 紅方", true);
-        JToggleButton blueBtn = new JToggleButton("🔵 藍方", false);
-        redBtn.setBackground(new Color(255, 100, 100));
-        blueBtn.setBackground(Color.LIGHT_GRAY);
-
-        ButtonGroup allianceGroup = new ButtonGroup();
-        allianceGroup.add(redBtn);
-        allianceGroup.add(blueBtn);
-
-        redBtn.addActionListener(e -> {
-            currentMarkingAlliance = com.telearn.ftc.model.Alliance.RED;
-            redBtn.setBackground(new Color(255, 100, 100));
-            blueBtn.setBackground(Color.LIGHT_GRAY);
-        });
-        blueBtn.addActionListener(e -> {
-            currentMarkingAlliance = com.telearn.ftc.model.Alliance.BLUE;
-            blueBtn.setBackground(new Color(100, 100, 255));
-            redBtn.setBackground(Color.LIGHT_GRAY);
-        });
-
-        alliancePanel.add(allianceLabel);
-        alliancePanel.add(redBtn);
-        alliancePanel.add(blueBtn);
-
-        // 標記機器人按鈕
-        JButton markRobotsBtn = new JButton("🎯 標記機器人 (0/4)");
-        markRobotsBtn.setBackground(Color.LIGHT_GRAY);
-        markRobotsBtn.addActionListener(e -> {
-            if (isMarkingMode) {
-                // 結束標記模式
-                isMarkingMode = false;
-                markRobotsBtn.setBackground(Color.LIGHT_GRAY);
-                markRobotsBtn.setText("🎯 標記機器人 (" + robotDetector.getMarkedRobotCount() + "/4)");
-                addEventLog("標記模式已關閉");
-            } else {
-                // 開始標記模式
-                robotDetector.resetTracking();
-                // 設定模板幀供機器人模板提取使用
-                if (lastProcessedFrame != null && !lastProcessedFrame.empty()) {
-                    robotDetector.setTemplateFrame(lastProcessedFrame);
-                }
-                isMarkingMode = true;
-                isPaused = true; // 自動暫停
-                markRobotsBtn.setBackground(Color.YELLOW);
-                markRobotsBtn.setText("🎯 標記中... 點擊影片標記機器人 (0/4)");
-                addEventLog("標記模式已開啟 - 選擇聯盟後點擊機器人位置");
-            }
-        });
-
-        // 影片點擊處理 (標記機器人)
-        videoLabel.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                if (!isMarkingMode || camera == null)
-                    return;
-
-                // Label 尺寸
-                int labelWidth = videoLabel.getWidth();
-                int labelHeight = videoLabel.getHeight();
-                int clickX = e.getX();
-                int clickY = e.getY();
-
-                // 影格實際尺寸
-                int frameWidth = (int) camera.get(org.opencv.videoio.Videoio.CAP_PROP_FRAME_WIDTH);
-                int frameHeight = (int) camera.get(org.opencv.videoio.Videoio.CAP_PROP_FRAME_HEIGHT);
-
-                // 簡單比例轉換 (因為影像填滿整個 Label，不需要偏移計算)
-                int actualX = (int) ((double) clickX / labelWidth * frameWidth);
-                int actualY = (int) ((double) clickY / labelHeight * frameHeight);
-
-                boolean added = robotDetector.addManualRobot(actualX, actualY, DEFAULT_ROBOT_SIZE,
-                        currentMarkingAlliance);
-                if (added) {
-                    int count = robotDetector.getMarkedRobotCount();
-                    markRobotsBtn.setText("🎯 標記中... (" + count + "/4)");
-                    if (count >= 4) {
-                        isMarkingMode = false;
-                        markRobotsBtn.setBackground(Color.GREEN);
-                        markRobotsBtn.setText("✓ 標記完成 (4/4)");
-                        isPaused = false;
-                        addEventLog("4 台機器人已標記完成！開始追蹤");
-                    }
-                }
-            }
-        });
-
-        // 標記得分區按鈕
-        JButton markZonesBtn = new JButton("⭕ 標記得分區 (0/2)");
-        markZonesBtn.setBackground(Color.LIGHT_GRAY);
-        markZonesBtn.addActionListener(e -> {
-            if (isMarkingZoneMode) {
-                isMarkingZoneMode = false;
-                markZonesBtn.setBackground(Color.LIGHT_GRAY);
-                markZonesBtn.setText("⭕ 標記得分區 (" + scoringZones.size() + "/2)");
-                addEventLog("得分區標記模式已關閉");
-            } else {
-                scoringZones.clear();
-                scoredArtifactPositions.clear();
-                isMarkingZoneMode = true;
-                isPaused = true;
-                markZonesBtn.setBackground(Color.ORANGE);
-                markZonesBtn.setText("⭕ 標記中... 選擇聯盟後點擊得分區 (0/2)");
-                addEventLog("得分區標記模式 - 選擇紅/藍方後點擊球門位置");
-            }
-        });
-
-        // 得分區點擊處理
-        videoLabel.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                if (!isMarkingZoneMode || camera == null)
-                    return;
-
-                int labelWidth = videoLabel.getWidth();
-                int labelHeight = videoLabel.getHeight();
-                int clickX = e.getX();
-                int clickY = e.getY();
-
-                int frameWidth = (int) camera.get(org.opencv.videoio.Videoio.CAP_PROP_FRAME_WIDTH);
-                int frameHeight = (int) camera.get(org.opencv.videoio.Videoio.CAP_PROP_FRAME_HEIGHT);
-
-                int actualX = (int) ((double) clickX / labelWidth * frameWidth);
-                int actualY = (int) ((double) clickY / labelHeight * frameHeight);
-
-                // 建立得分區
-                int halfSize = DEFAULT_ZONE_SIZE / 2;
-                int x = Math.max(0, actualX - halfSize);
-                int y = Math.max(0, actualY - halfSize);
-
-                org.opencv.core.Rect zoneBounds = new org.opencv.core.Rect(x, y, DEFAULT_ZONE_SIZE, DEFAULT_ZONE_SIZE);
-                String zoneName = currentMarkingAlliance == com.telearn.ftc.model.Alliance.RED ? "紅方球門" : "藍方球門";
-                com.telearn.ftc.model.ScoringZone zone = new com.telearn.ftc.model.ScoringZone(
-                        scoringZones.size() + 1, zoneName, currentMarkingAlliance, zoneBounds);
-                scoringZones.add(zone);
-
-                addEventLog(zoneName + " 已標記於 (" + actualX + ", " + actualY + ")");
-                markZonesBtn.setText("⭕ 標記中... (" + scoringZones.size() + "/2)");
-
-                if (scoringZones.size() >= 2) {
-                    isMarkingZoneMode = false;
-                    markZonesBtn.setBackground(Color.GREEN);
-                    markZonesBtn.setText("✓ 得分區標記完成 (2/2)");
-                    isPaused = false;
-                    autoScoring = true;
-                    addEventLog("得分區標記完成！自動計分已啟用");
-                }
-            }
-        });
-
-        overlayControlPanel.add(showArtifactsChk);
-        overlayControlPanel.add(showRobotsChk);
-        overlayControlPanel.add(showZonesChk);
-        overlayControlPanel.add(showAprilTagsChk);
-        overlayControlPanel.add(autoDetectMotifChk);
-        overlayControlPanel.add(alliancePanel);
-        overlayControlPanel.add(markRobotsBtn);
-        overlayControlPanel.add(markZonesBtn);
-
-        panel.add(overlayControlPanel, BorderLayout.NORTH);
-
-        // 影片控制列 (底部)
-        JPanel videoControlPanel = createVideoControlPanel();
-        panel.add(videoControlPanel, BorderLayout.SOUTH);
-
-        return panel;
-    }
-
-    /**
-     * 建立影片控制面板
-     */
-    private JPanel createVideoControlPanel() {
-        JPanel panel = new JPanel(new BorderLayout(5, 0));
-        panel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
-
-        // 播放/暫停按鈕
-        playPauseBtn = new JButton("⏸ 暫停");
-        playPauseBtn.setPreferredSize(new Dimension(80, 30));
-        playPauseBtn.addActionListener(e -> togglePlayPause());
+        // 播放/暫停
+        playPauseBtn = new JButton("▶ 播放");
         playPauseBtn.setEnabled(false);
+        playPauseBtn.addActionListener(e -> togglePlayPause());
+        panel.add(playPauseBtn);
 
-        // 時間軸 Slider
+        // 進度條
         videoSlider = new JSlider(0, 100, 0);
+        videoSlider.setPreferredSize(new Dimension(400, 30));
         videoSlider.setEnabled(false);
         videoSlider.addChangeListener(e -> {
-            if (videoSlider.getValueIsAdjusting() && camera != null && camera.isOpened()) {
-                int targetFrame = videoSlider.getValue();
-                seekToFrame(targetFrame);
-            }
+            if (!videoSlider.getValueIsAdjusting())
+                return;
+            int targetFrame = videoSlider.getValue();
+            seekToFrame(targetFrame);
         });
+        panel.add(videoSlider);
 
         // 影格資訊
         frameInfoLabel = new JLabel("0 / 0");
-        frameInfoLabel.setPreferredSize(new Dimension(120, 20));
-        frameInfoLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        frameInfoLabel.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        panel.add(frameInfoLabel);
 
-        panel.add(playPauseBtn, BorderLayout.WEST);
-        panel.add(videoSlider, BorderLayout.CENTER);
-        panel.add(frameInfoLabel, BorderLayout.EAST);
+        panel.add(new JSeparator(SwingConstants.VERTICAL));
+
+        // 擷取畫面
+        JButton captureBtn = new JButton("📷 擷取畫面");
+        captureBtn.addActionListener(e -> captureImage());
+        panel.add(captureBtn);
 
         return panel;
     }
 
     /**
-     * 切換播放/暫停
+     * 建立影片面板
      */
-    private void togglePlayPause() {
-        isPaused = !isPaused;
-        playPauseBtn.setText(isPaused ? "▶ 播放" : "⏸ 暫停");
-    }
+    private JPanel createVideoPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBorder(BorderFactory.createTitledBorder("影片畫面"));
 
-    /**
-     * 跳轉到指定影格 (執行緒安全)
-     */
-    private void seekToFrame(int frameNumber) {
-        if (camera == null || !camera.isOpened() || totalFrames <= 0) {
-            return;
-        }
+        videoLabel = new JLabel();
+        videoLabel.setPreferredSize(new Dimension(VIDEO_WIDTH, VIDEO_HEIGHT));
+        videoLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        videoLabel.setBackground(Color.BLACK);
+        videoLabel.setOpaque(true);
+        videoLabel.setText("請載入影片檔案");
 
-        // 設定 seeking flag 以停止 captureLoop 讀取
-        isSeeking = true;
+        panel.add(new JScrollPane(videoLabel), BorderLayout.CENTER);
 
-        // 在背景執行緒遛行 seek 以避免阻塞 UI
-        new Thread(() -> {
-            synchronized (videoLock) {
-                try {
-                    camera.set(Videoio.CAP_PROP_POS_FRAMES, frameNumber);
-                    currentFrame = frameNumber;
-
-                    // 讀取並顯示該影格
-                    Mat frame = new Mat();
-                    if (camera.read(frame)) {
-                        processFrame(frame);
-                        updateVideoLabel(frame);
-                    }
-                    frame.release();
-
-                    updateFrameInfo();
-                } finally {
-                    isSeeking = false;
-                }
-            }
-        }).start();
-    }
-
-    /**
-     * 更新影格資訊顯示
-     */
-    private void updateFrameInfo() {
-        SwingUtilities.invokeLater(() -> {
-            frameInfoLabel.setText(String.format("%d / %d", currentFrame, totalFrames));
-            if (!videoSlider.getValueIsAdjusting()) {
-                videoSlider.setValue(currentFrame);
-            }
-        });
+        return panel;
     }
 
     /**
@@ -460,225 +225,192 @@ public class FTCMainWindow extends JFrame {
     private JPanel createInfoPanel() {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setPreferredSize(new Dimension(350, 0));
+        panel.setBorder(new EmptyBorder(5, 5, 5, 5));
+        panel.setPreferredSize(new Dimension(300, 0));
 
-        // 比賽資訊
-        JPanel matchInfoPanel = new JPanel(new GridLayout(4, 2, 5, 5));
-        matchInfoPanel.setBorder(new TitledBorder("比賽資訊"));
+        // 主題顯示
+        JPanel motifPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        motifPanel.setBorder(BorderFactory.createTitledBorder("主題 (MOTIF)"));
+        motifLabel = new JLabel("--");
+        motifLabel.setFont(new Font("Monospaced", Font.BOLD, 24));
+        motifPanel.add(motifLabel);
+        panel.add(motifPanel);
 
-        timeLabel = new JLabel("02:30");
-        timeLabel.setFont(new Font("Monospaced", Font.BOLD, 24));
-        phaseLabel = new JLabel("比賽前");
-        motifLabel = new JLabel("???");
-        rampLabel = new JLabel("0/9");
-
-        matchInfoPanel.add(new JLabel("剩餘時間:"));
-        matchInfoPanel.add(timeLabel);
-        matchInfoPanel.add(new JLabel("階段:"));
-        matchInfoPanel.add(phaseLabel);
-        matchInfoPanel.add(new JLabel("主題:"));
-        matchInfoPanel.add(motifLabel);
-        matchInfoPanel.add(new JLabel("坡道:"));
-        matchInfoPanel.add(rampLabel);
-
-        panel.add(matchInfoPanel);
-
-        // 坡道進度條
-        rampProgressBar = new JProgressBar(0, 9);
-        rampProgressBar.setStringPainted(true);
-        rampProgressBar.setString("0/9");
-        panel.add(rampProgressBar);
-
+        // 紅方分數
+        panel.add(createAllianceScorePanel(Alliance.RED));
         panel.add(Box.createVerticalStrut(10));
 
-        // 紅色聯盟計分板
-        redScorePanel = new ScoreboardPanel(Alliance.RED);
-        panel.add(redScorePanel);
-
+        // 藍方分數
+        panel.add(createAllianceScorePanel(Alliance.BLUE));
         panel.add(Box.createVerticalStrut(10));
 
-        // 藍色聯盟計分板
-        blueScorePanel = new ScoreboardPanel(Alliance.BLUE);
-        panel.add(blueScorePanel);
-
-        panel.add(Box.createVerticalStrut(10));
-
-        // 事件記錄
-        JPanel eventPanel = new JPanel(new BorderLayout());
-        eventPanel.setBorder(new TitledBorder("事件記錄"));
-
-        eventLogArea = new JTextArea(6, 30);
-        eventLogArea.setEditable(false);
-        eventLogArea.setFont(new Font("Monospaced", Font.PLAIN, 11));
-        JScrollPane scrollPane = new JScrollPane(eventLogArea);
-        eventPanel.add(scrollPane, BorderLayout.CENTER);
-
-        panel.add(eventPanel);
+        // 驗證狀態
+        JPanel validPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        validPanel.setBorder(BorderFactory.createTitledBorder("驗證狀態"));
+        validationLabel = new JLabel("等待中...");
+        validationLabel.setFont(new Font("SansSerif", Font.BOLD, 16));
+        validPanel.add(validationLabel);
+        panel.add(validPanel);
 
         return panel;
     }
 
     /**
-     * 建立控制面板
+     * 建立聯盟分數面板
      */
-    private JPanel createControlPanel() {
-        JPanel panel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 5));
-        panel.setBorder(new TitledBorder("控制"));
+    private JPanel createAllianceScorePanel(Alliance alliance) {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
 
-        // 影片控制
-        JButton loadFileBtn = new JButton("📂 載入影片");
-        loadFileBtn.addActionListener(e -> loadFile());
+        String title = alliance == Alliance.RED ? "紅方 (Alliance 1)" : "藍方 (Alliance 3)";
+        Color bgColor = alliance == Alliance.RED ? new Color(255, 230, 230) : new Color(230, 230, 255);
 
-        JButton stopBtn = new JButton("⏹ 停止");
-        stopBtn.addActionListener(e -> stopCamera());
+        panel.setBorder(BorderFactory.createTitledBorder(title));
+        panel.setBackground(bgColor);
 
-        JButton captureBtn = new JButton("📷 擷取畫面");
-        captureBtn.addActionListener(e -> captureImage());
+        // 分數行
+        JPanel scoreRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 20, 5));
+        scoreRow.setOpaque(false);
 
-        panel.add(loadFileBtn);
-        panel.add(stopBtn);
-        panel.add(captureBtn);
+        JLabel calcLabel = new JLabel("計算: ");
+        JLabel scoreLabel = new JLabel("0");
+        scoreLabel.setFont(new Font("SansSerif", Font.BOLD, 28));
 
-        panel.add(new JSeparator(SwingConstants.VERTICAL));
+        JLabel ocrLabelText = new JLabel("OCR: ");
+        JLabel ocrLabel = new JLabel("--");
+        ocrLabel.setFont(new Font("SansSerif", Font.BOLD, 28));
+        ocrLabel.setForeground(Color.GRAY);
 
-        // 手動計分
-        JButton scoreRedBtn = new JButton("🔴 紅+3");
-        scoreRedBtn.setBackground(new Color(255, 200, 200));
-        scoreRedBtn.addActionListener(e -> manualScore(Alliance.RED));
+        scoreRow.add(calcLabel);
+        scoreRow.add(scoreLabel);
+        scoreRow.add(ocrLabelText);
+        scoreRow.add(ocrLabel);
+        panel.add(scoreRow);
 
-        JButton scoreBlueBtn = new JButton("🔵 藍+3");
-        scoreBlueBtn.setBackground(new Color(200, 200, 255));
-        scoreBlueBtn.addActionListener(e -> manualScore(Alliance.BLUE));
+        // 斜坡狀態
+        JPanel rampRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 2, 2));
+        rampRow.setOpaque(false);
+        rampRow.setBorder(BorderFactory.createTitledBorder("斜坡 (0/9)"));
 
-        panel.add(scoreRedBtn);
-        panel.add(scoreBlueBtn);
+        // 9 個格子
+        for (int i = 0; i < 9; i++) {
+            JLabel slot = new JLabel();
+            slot.setPreferredSize(new Dimension(25, 25));
+            slot.setOpaque(true);
+            slot.setBackground(Color.LIGHT_GRAY);
+            slot.setBorder(BorderFactory.createLineBorder(Color.DARK_GRAY));
+            rampRow.add(slot);
+        }
+        panel.add(rampRow);
 
-        panel.add(new JSeparator(SwingConstants.VERTICAL));
+        // 圖案匹配
+        JPanel patternRow = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        patternRow.setOpaque(false);
+        JLabel patternLabel = new JLabel("圖案匹配: 0/3");
+        patternRow.add(patternLabel);
+        panel.add(patternRow);
 
-        // 主題選擇
-        JComboBox<Motif> motifCombo = new JComboBox<>(new Motif[] { Motif.UNKNOWN, Motif.GPP, Motif.PGP, Motif.PPG });
-        motifCombo.addActionListener(e -> {
-            Motif selected = (Motif) motifCombo.getSelectedItem();
-            scoringEngine.setDetectedMotif(selected);
-            motifLabel.setText(selected.getPattern());
-        });
-        panel.add(new JLabel("主題:"));
-        panel.add(motifCombo);
-
-        panel.add(new JSeparator(SwingConstants.VERTICAL));
-
-        // 資料匯出
-        JButton exportBtn = new JButton("💾 匯出資料");
-        exportBtn.addActionListener(e -> exportMatchData());
-        panel.add(exportBtn);
-
-        return panel;
-    }
-
-    /**
-     * 匯出比賽資料
-     */
-    private void exportMatchData() {
-        String dir = "match_data";
-        File dirFile = new File(dir);
-        if (!dirFile.exists()) {
-            dirFile.mkdirs();
+        // 儲存參考
+        if (alliance == Alliance.RED) {
+            redScoreLabel = scoreLabel;
+            redOcrLabel = ocrLabel;
+            redRampPanel = rampRow;
+            redPatternLabel = patternLabel;
+        } else {
+            blueScoreLabel = scoreLabel;
+            blueOcrLabel = ocrLabel;
+            blueRampPanel = rampRow;
+            bluePatternLabel = patternLabel;
         }
 
-        // 匯出 JSON
-        MatchDataExporter.exportToJsonFile(scoringEngine, cycleAnalyzer, dir);
+        return panel;
+    }
 
-        // 匯出 CSV
-        MatchDataExporter.exportToCsvFile(scoringEngine, cycleAnalyzer, dir);
+    /**
+     * 建立事件記錄面板
+     */
+    private JPanel createEventLogPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBorder(BorderFactory.createTitledBorder("事件記錄"));
+        panel.setPreferredSize(new Dimension(0, 120));
 
-        JOptionPane.showMessageDialog(this,
-                "比賽資料已匯出至 " + dir + " 目錄",
-                "匯出成功", JOptionPane.INFORMATION_MESSAGE);
+        eventLogArea = new JTextArea();
+        eventLogArea.setEditable(false);
+        eventLogArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
 
-        addEventLog("資料已匯出至 " + dir);
+        JScrollPane scrollPane = new JScrollPane(eventLogArea);
+        panel.add(scrollPane, BorderLayout.CENTER);
+
+        return panel;
     }
 
     /**
      * 載入檔案
      */
     private void loadFile() {
-        JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setDialogTitle("選擇影片或圖片檔案");
-        int result = fileChooser.showOpenDialog(this);
+        JFileChooser chooser = new JFileChooser();
+        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(
+                "影片檔 (*.mp4, *.avi, *.mov)", "mp4", "avi", "mov"));
 
-        if (result == JFileChooser.APPROVE_OPTION) {
-            File selectedFile = fileChooser.getSelectedFile();
-            stopCamera(); // Stop current stream if any
-            startCamera(selectedFile.getAbsolutePath());
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            File file = chooser.getSelectedFile();
+            startVideo(file.getAbsolutePath());
         }
     }
 
     /**
-     * 啟動攝影機或載入檔案
-     * 
-     * @param videoPath 檔案路徑，null 表示使用預設攝影機
+     * 啟動影片
      */
-    private void startCamera(String videoPath) {
-        if (isRunning) {
-            log.info("停止目前串流以切換來源");
-            stopCamera();
-        }
+    private void startVideo(String videoPath) {
+        stopVideo();
 
-        if (videoPath == null) {
-            camera = new VideoCapture(0);
-            this.currentVideoPath = "Camera 0";
-        } else {
+        synchronized (videoLock) {
             camera = new VideoCapture(videoPath);
-            this.currentVideoPath = videoPath;
-        }
+            if (!camera.isOpened()) {
+                JOptionPane.showMessageDialog(this, "無法開啟影片: " + videoPath);
+                return;
+            }
 
-        if (!camera.isOpened()) {
-            JOptionPane.showMessageDialog(this,
-                    "無法開啟來源：" + (videoPath == null ? "Default Camera" : videoPath),
-                    "錯誤", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-
-        camera.set(Videoio.CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH);
-        camera.set(Videoio.CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT);
-
-        isRunning = true;
-        isPaused = false;
-
-        // 初始化影片控制 (僅限檔案)
-        boolean isVideoFile = videoPath != null && !currentVideoPath.equals("Camera 0");
-        if (isVideoFile) {
+            currentVideoPath = videoPath;
             totalFrames = (int) camera.get(Videoio.CAP_PROP_FRAME_COUNT);
             currentFrame = 0;
-            videoSlider.setMaximum(Math.max(1, totalFrames));
+
+            videoSlider.setMaximum(totalFrames > 0 ? totalFrames - 1 : 0);
             videoSlider.setValue(0);
             videoSlider.setEnabled(true);
             playPauseBtn.setEnabled(true);
-            playPauseBtn.setText("⏸ 暫停");
-            updateFrameInfo();
-        } else {
-            totalFrames = 0;
-            currentFrame = 0;
-            videoSlider.setEnabled(false);
-            playPauseBtn.setEnabled(false);
-            frameInfoLabel.setText("即時攝影機");
+
+            isRunning = true;
+            isPaused = true;
+            playPauseBtn.setText("▶ 播放");
+
+            captureThread = new Thread(this::captureLoop, "VideoCapture");
+            captureThread.setDaemon(true);
+            captureThread.start();
+
+            addEventLog("已載入影片: " + new File(videoPath).getName());
+            log.info("影片已載入: {}", videoPath);
         }
-
-        captureThread = new Thread(this::captureLoop);
-        captureThread.start();
-
-        log.info("攝影機已啟動");
     }
 
     /**
-     * 影像擷取迴圈 (執行緒安全)
+     * 影像擷取迴圈
      */
     private void captureLoop() {
         Mat frame = new Mat();
-        boolean isVideoFile = currentVideoPath != null && !currentVideoPath.equals("Camera 0");
+        double fps = 30;
+
+        synchronized (videoLock) {
+            if (camera != null && camera.isOpened()) {
+                fps = camera.get(Videoio.CAP_PROP_FPS);
+                if (fps <= 0)
+                    fps = 30;
+            }
+        }
+
+        long frameDelay = (long) (1000.0 / fps);
 
         while (isRunning) {
-            // 如果暫停或正在 seeking，等待
             if (isPaused || isSeeking) {
                 try {
                     Thread.sleep(50);
@@ -688,41 +420,37 @@ public class FTCMainWindow extends JFrame {
                 continue;
             }
 
-            // 使用鎖保護 VideoCapture 存取
+            boolean frameRead;
             synchronized (videoLock) {
-                if (!isRunning || isSeeking)
-                    continue;
-
-                if (camera.read(frame)) {
-                    processFrame(frame);
-                    updateVideoLabel(frame);
-
-                    // 更新影格計數 (僅影片檔案)
-                    if (isVideoFile) {
-                        currentFrame = (int) camera.get(Videoio.CAP_PROP_POS_FRAMES);
-                        updateFrameInfo();
-
-                        // 影片結束時自動暫停
-                        if (currentFrame >= totalFrames) {
-                            isPaused = true;
-                            SwingUtilities.invokeLater(() -> playPauseBtn.setText("▶ 播放"));
-                        }
-                    }
-                } else if (isVideoFile) {
-                    // 影片結束
-                    isPaused = true;
-                    SwingUtilities.invokeLater(() -> playPauseBtn.setText("▶ 播放"));
+                if (camera == null || !camera.isOpened())
+                    break;
+                frameRead = camera.read(frame);
+                if (frameRead) {
+                    currentFrame = (int) camera.get(Videoio.CAP_PROP_POS_FRAMES);
                 }
             }
 
+            if (frameRead && !frame.empty()) {
+                processFrame(frame);
+
+                final int frameNum = currentFrame;
+                SwingUtilities.invokeLater(() -> {
+                    if (!videoSlider.getValueIsAdjusting()) {
+                        videoSlider.setValue(frameNum);
+                    }
+                    updateFrameInfo();
+                });
+            } else {
+                // 影片結束
+                isPaused = true;
+                SwingUtilities.invokeLater(() -> {
+                    playPauseBtn.setText("▶ 播放");
+                    addEventLog("影片播放完畢");
+                });
+            }
+
             try {
-                if (isVideoFile) {
-                    double fps = camera.get(Videoio.CAP_PROP_FPS);
-                    int delay = (fps > 0) ? (int) (1000 / fps) : 33;
-                    Thread.sleep(delay);
-                } else {
-                    Thread.sleep(33);
-                }
+                Thread.sleep(frameDelay);
             } catch (InterruptedException e) {
                 break;
             }
@@ -735,456 +463,282 @@ public class FTCMainWindow extends JFrame {
      * 處理單一影格
      */
     private void processFrame(Mat frame) {
-        // 保存當前幀供標記用
-        if (lastProcessedFrame == null) {
-            lastProcessedFrame = frame.clone();
-        } else {
-            frame.copyTo(lastProcessedFrame);
-        }
-
-        // 定義場地 ROI (只分析中央比賽區域)
-        // 根據影片比例：場地約佔水平 10%-95%，垂直 3%-63% (計分板上方)
         int frameWidth = frame.cols();
         int frameHeight = frame.rows();
 
-        int roiX = (int) (frameWidth * 0.10);
-        int roiY = (int) (frameHeight * 0.03);
-        int roiW = (int) (frameWidth * 0.85);
-        int roiH = (int) (frameHeight * 0.60);
+        // 1. AprilTag 偵測 - 找到球門位置
+        List<AprilTagDetector.TagDetection> tags = aprilTagDetector.detect(frame);
+        aprilTagDetector.drawDetections(frame, tags);
 
-        // 確保 ROI 在有效範圍內
-        roiW = Math.min(roiW, frameWidth - roiX);
-        roiH = Math.min(roiH, frameHeight - roiY);
+        // 更新球門位置
+        for (AprilTagDetector.TagDetection tag : tags) {
+            updateGoalFromAprilTag(tag, frameWidth, frameHeight);
 
-        Rect fieldROI = new Rect(roiX, roiY, roiW, roiH);
-        Mat fieldFrame = new Mat(frame, fieldROI);
-
-        // 偵測文物 (只在場地區域內)
-        if (showArtifacts) {
-            List<DetectedArtifact> artifacts = artifactDetector.detect(fieldFrame);
-            // 調整座標回原始影像
-            for (DetectedArtifact artifact : artifacts) {
-                Rect box = artifact.getBoundingBox();
-                artifact.setBoundingBox(new Rect(box.x + roiX, box.y + roiY, box.width, box.height));
-            }
-            artifactDetector.drawDetections(frame, artifacts);
-
-            // 自動計分：檢查文物是否在得分區內
-            if (autoScoring && !scoringZones.isEmpty()) {
-                for (DetectedArtifact artifact : artifacts) {
-                    Point artifactCenter = artifact.getCenter();
-                    if (artifactCenter == null)
-                        continue;
-
-                    // 檢查是否已在此位置計過分 (使用距離閾值)
-                    boolean alreadyScored = scoredArtifactPositions.stream()
-                            .anyMatch(p -> {
-                                double dx = p.x - artifactCenter.x;
-                                double dy = p.y - artifactCenter.y;
-                                return Math.sqrt(dx * dx + dy * dy) < SCORED_POSITION_THRESHOLD;
-                            });
-
-                    if (alreadyScored)
-                        continue;
-
-                    // 檢查是否在任何得分區內
-                    for (com.telearn.ftc.model.ScoringZone zone : scoringZones) {
-                        if (zone.contains(artifact)) {
-                            // 計分！
-                            zone.recordScore();
-                            scoredArtifactPositions.add(new Point(artifactCenter.x, artifactCenter.y));
-
-                            // 更新計分引擎
-                            com.telearn.ftc.model.ArtifactType type = artifact.getType();
-                            scoringEngine.scoreClassified(zone.getAlliance(), type);
-
-                            String msg = String.format("%s 得分! %s球進入%s (+3分)",
-                                    zone.getAlliance().getDisplayName(),
-                                    type.getDisplayName(),
-                                    zone.getName());
-                            addEventLog(msg);
-
-                            // 更新分數顯示
-                            SwingUtilities.invokeLater(this::updateMatchInfo);
-                            break;
-                        }
-                    }
+            // 偵測主題 (ID 21-23)
+            if (tag.getId() >= 21 && tag.getId() <= 23) {
+                Motif detected = Motif.fromAprilTagId(tag.getId());
+                if (detected != currentMotif) {
+                    currentMotif = detected;
+                    final Motif m = detected;
+                    SwingUtilities.invokeLater(() -> {
+                        motifLabel.setText(m.getPattern());
+                        addEventLog("偵測到主題: " + m.getPattern());
+                    });
                 }
             }
         }
 
-        // 繪製得分區
-        for (com.telearn.ftc.model.ScoringZone zone : scoringZones) {
-            Rect bounds = zone.getBounds();
-            Scalar color = zone.getAlliance() == com.telearn.ftc.model.Alliance.RED
-                    ? new Scalar(0, 0, 255) // 紅色
-                    : new Scalar(255, 0, 0); // 藍色
+        // 2. 文物偵測
+        List<DetectedArtifact> artifacts = artifactDetector.detect(frame);
+        artifactDetector.drawDetections(frame, artifacts);
 
-            // 繪製虛線矩形框
-            Imgproc.rectangle(frame, bounds, color, 2);
+        // 3. 繪製球門區域
+        drawGoalAreas(frame);
 
-            // 繪製標籤
-            String label = zone.getName() + " (" + zone.getScoredCount() + "球)";
-            Imgproc.putText(frame, label,
-                    new Point(bounds.x, bounds.y - 5),
-                    Imgproc.FONT_HERSHEY_SIMPLEX, 0.5, color, 2);
-        }
+        // 4. 偵測文物進入球門
+        checkArtifactScoring(artifacts);
 
-        // 偵測機器人 (使用完整畫面，因為手動標記使用完整座標)
-        if (showRobots) {
-            List<DetectedRobot> robots = robotDetector.detect(frame);
-            robotDetector.drawDetections(frame, robots);
-        }
+        // 5. OCR 讀取轉播分數
+        scoreOCR.detect(frame);
 
-        // 繪製 ROI 邊界 (除錯用)
-        if (showZones) {
-            Imgproc.rectangle(frame, fieldROI, new Scalar(255, 255, 0), 2);
-            Imgproc.putText(frame, "Field ROI", new Point(roiX + 5, roiY + 20),
-                    Imgproc.FONT_HERSHEY_SIMPLEX, 0.6, new Scalar(255, 255, 0), 2);
-        }
+        // 更新顯示
+        updateVideoLabel(frame);
+    }
 
-        // AprilTag 偵測與主題自動識別
-        if (showAprilTags || autoDetectMotif) {
-            List<AprilTagDetector.TagDetection> tags = aprilTagDetector.detect(frame);
+    /**
+     * 根據 AprilTag 更新球門位置
+     */
+    private void updateGoalFromAprilTag(AprilTagDetector.TagDetection tag, int frameWidth, int frameHeight) {
+        // ID 20 = 藍方球門, ID 24 = 紅方球門
+        if (tag.getId() == 20 || tag.getId() == 24) {
+            org.opencv.core.Point center = tag.getCenter();
+            double tagSize = tag.getSize();
 
-            if (showAprilTags) {
-                aprilTagDetector.drawDetections(frame, tags);
+            // 球門區域在 AprilTag 旁邊
+            int goalWidth = (int) (tagSize * 2);
+            int goalHeight = (int) (tagSize * 4);
+
+            Rect goalBounds;
+            if (tag.getId() == 20) {
+                // 藍方球門在左側
+                goalBounds = new Rect(
+                        Math.max(0, (int) (center.x - tagSize * 2 - goalWidth)),
+                        Math.max(0, (int) (center.y - goalHeight / 2)),
+                        goalWidth, goalHeight);
+                blueGoal = new GoalArea(Alliance.BLUE, goalBounds, center);
+            } else {
+                // 紅方球門在右側
+                goalBounds = new Rect(
+                        Math.min(frameWidth - goalWidth, (int) (center.x + tagSize * 2)),
+                        Math.max(0, (int) (center.y - goalHeight / 2)),
+                        goalWidth, goalHeight);
+                redGoal = new GoalArea(Alliance.RED, goalBounds, center);
             }
-
-            // 使用 AprilTag ID 20 和 ID 24 來建立坡道得分區
-            // ID 20 = 藍方坡道 (在左側/外側), ID 24 = 紅方坡道 (在右側/外側)
-            if (scoringZones.isEmpty()) {
-                for (AprilTagDetector.TagDetection tag : tags) {
-                    if (tag.getId() == 20 || tag.getId() == 24) {
-                        Point center = tag.getCenter();
-                        double tagSize = tag.getSize();
-
-                        // 坡道區大小 - 只有球滑下來的那個小區域
-                        int zoneWidth = (int) (tagSize * 1.2); // 較窄
-                        int zoneHeight = (int) (tagSize * 3); // 較短
-                        int zoneY = (int) (center.y - tagSize / 2); // AprilTag 附近
-                        int zoneX;
-
-                        // ID 20 (藍方) 坡道在 AprilTag 左側邊緣
-                        // ID 24 (紅方) 坡道在 AprilTag 右側邊緣
-                        if (tag.getId() == 20) {
-                            // 藍方 - 坡道緊鄰 AprilTag 左邊
-                            zoneX = (int) (center.x - tagSize * 1.5 - zoneWidth);
-                        } else {
-                            // 紅方 - 坡道緊鄰 AprilTag 右邊
-                            zoneX = (int) (center.x + tagSize * 1.5);
-                        }
-
-                        // 確保在影像範圍內
-                        zoneX = Math.max(0, zoneX);
-                        zoneY = Math.max(0, zoneY);
-                        zoneWidth = Math.min(zoneWidth, frameWidth - zoneX);
-                        zoneHeight = Math.min(zoneHeight, frameHeight - zoneY);
-
-                        if (zoneWidth > 20 && zoneHeight > 20) {
-                            // ID 20 = 藍方, ID 24 = 紅方
-                            com.telearn.ftc.model.Alliance alliance = tag.getId() == 20
-                                    ? com.telearn.ftc.model.Alliance.BLUE
-                                    : com.telearn.ftc.model.Alliance.RED;
-                            String zoneName = alliance == com.telearn.ftc.model.Alliance.BLUE ? "藍方坡道" : "紅方坡道";
-
-                            Rect zoneBounds = new Rect(zoneX, zoneY, zoneWidth, zoneHeight);
-                            com.telearn.ftc.model.ScoringZone zone = new com.telearn.ftc.model.ScoringZone(
-                                    scoringZones.size() + 1, zoneName, alliance, zoneBounds);
-                            scoringZones.add(zone);
-
-                            autoScoring = true;
-                            addEventLog("偵測到 " + zoneName + " (AprilTag ID:" + tag.getId() + ")");
-                        }
-                    }
-                }
-            }
-
-            // 自動設定主題
-            if (autoDetectMotif) {
-                aprilTagDetector.detectMotif(frame).ifPresent(motif -> {
-                    if (motif != scoringEngine.getMatchState().getDetectedMotif()) {
-                        scoringEngine.setDetectedMotif(motif);
-                        final Motif detectedMotif = motif;
-                        SwingUtilities.invokeLater(() -> {
-                            addEventLog("自動偵測到主題: " + detectedMotif.getPattern());
-                        });
-                    }
-                });
-            }
-        }
-
-        // 更新比賽時間
-        if (scoringEngine.getMatchState().isMatchInProgress()) {
-            scoringEngine.updateTime();
-            SwingUtilities.invokeLater(this::updateMatchInfo);
         }
     }
 
     /**
-     * 更新影像顯示 (填滿整個 Label，簡化座標轉換)
+     * 繪製球門區域
      */
-    private void updateVideoLabel(Mat frame) {
-        // 取得 videoLabel 目前的尺寸
-        int labelWidth = videoLabel.getWidth();
-        int labelHeight = videoLabel.getHeight();
+    private void drawGoalAreas(Mat frame) {
+        if (redGoal != null) {
+            Imgproc.rectangle(frame, redGoal.bounds, new Scalar(0, 0, 255), 2);
+            Imgproc.putText(frame, "RED GOAL",
+                    new org.opencv.core.Point(redGoal.bounds.x, redGoal.bounds.y - 10),
+                    Imgproc.FONT_HERSHEY_SIMPLEX, 0.6, new Scalar(0, 0, 255), 2);
+        }
+        if (blueGoal != null) {
+            Imgproc.rectangle(frame, blueGoal.bounds, new Scalar(255, 0, 0), 2);
+            Imgproc.putText(frame, "BLUE GOAL",
+                    new org.opencv.core.Point(blueGoal.bounds.x, blueGoal.bounds.y - 10),
+                    Imgproc.FONT_HERSHEY_SIMPLEX, 0.6, new Scalar(255, 0, 0), 2);
+        }
+    }
 
-        // 如果 label 尚未初始化，使用預設尺寸
-        if (labelWidth <= 0 || labelHeight <= 0) {
-            labelWidth = VIDEO_WIDTH;
-            labelHeight = VIDEO_HEIGHT;
+    /**
+     * 檢查文物是否進入球門計分
+     */
+    private void checkArtifactScoring(List<DetectedArtifact> artifacts) {
+        for (DetectedArtifact artifact : artifacts) {
+            org.opencv.core.Point center = artifact.getCenter();
+            if (center == null)
+                continue;
+
+            // 檢查紅方球門
+            if (redGoal != null && redGoal.contains(center)) {
+                if (redRamp.addArtifact(artifact.getType())) {
+                    addEventLog("紅方 CLASSIFIED +3分 (" + artifact.getType().getDisplayName() + ")");
+                    scoringEngine.scoreClassified(Alliance.RED, artifact.getType());
+                    updateScoreDisplay();
+                }
+            }
+
+            // 檢查藍方球門
+            if (blueGoal != null && blueGoal.contains(center)) {
+                if (blueRamp.addArtifact(artifact.getType())) {
+                    addEventLog("藍方 CLASSIFIED +3分 (" + artifact.getType().getDisplayName() + ")");
+                    scoringEngine.scoreClassified(Alliance.BLUE, artifact.getType());
+                    updateScoreDisplay();
+                }
+            }
+        }
+    }
+
+    /**
+     * 更新分數顯示
+     */
+    private void updateScoreDisplay() {
+        SwingUtilities.invokeLater(() -> {
+            MatchState state = scoringEngine.getMatchState();
+            redScoreLabel.setText(String.valueOf(state.getRedScore().getTotalScore()));
+            blueScoreLabel.setText(String.valueOf(state.getBlueScore().getTotalScore()));
+
+            // 更新斜坡顯示
+            updateRampDisplay(redRampPanel, redRamp, redPatternLabel);
+            updateRampDisplay(blueRampPanel, blueRamp, bluePatternLabel);
+        });
+    }
+
+    /**
+     * 更新斜坡顯示
+     */
+    private void updateRampDisplay(JPanel rampPanel, RampState ramp, JLabel patternLabel) {
+        Component[] slots = rampPanel.getComponents();
+        ArtifactType[] artifacts = ramp.getArtifacts();
+
+        for (int i = 0; i < 9 && i < slots.length; i++) {
+            if (slots[i] instanceof JLabel) {
+                JLabel slot = (JLabel) slots[i];
+                if (artifacts[i] != null) {
+                    if (artifacts[i] == ArtifactType.PURPLE) {
+                        slot.setBackground(new Color(128, 0, 128));
+                    } else if (artifacts[i] == ArtifactType.GREEN) {
+                        slot.setBackground(new Color(0, 128, 0));
+                    }
+                } else {
+                    slot.setBackground(Color.LIGHT_GRAY);
+                }
+            }
         }
 
-        // 直接縮放到 label 尺寸 (不維持長寬比，簡化座標計算)
-        Mat resizedFrame = new Mat();
-        Imgproc.resize(frame, resizedFrame, new Size(labelWidth, labelHeight), 0, 0, Imgproc.INTER_LINEAR);
+        // 更新斜坡標題
+        rampPanel.setBorder(BorderFactory.createTitledBorder(
+                "斜坡 (" + ramp.getCount() + "/9)"));
 
-        BufferedImage image = matToBufferedImage(resizedFrame);
-        ImageIcon icon = new ImageIcon(image);
-        SwingUtilities.invokeLater(() -> videoLabel.setIcon(icon));
+        // 更新圖案匹配
+        int matches = ramp.countPatternMatches(currentMotif);
+        patternLabel.setText("圖案匹配: " + matches + "/3");
+    }
 
-        resizedFrame.release();
+    /**
+     * 更新影像顯示
+     */
+    private void updateVideoLabel(Mat frame) {
+        BufferedImage image = matToBufferedImage(frame);
+        if (image != null) {
+            Image scaled = image.getScaledInstance(
+                    videoLabel.getWidth(), videoLabel.getHeight(), Image.SCALE_FAST);
+            videoLabel.setIcon(new ImageIcon(scaled));
+            videoLabel.setText(null);
+        }
     }
 
     /**
      * Mat 轉 BufferedImage
      */
     private BufferedImage matToBufferedImage(Mat mat) {
-        int type = BufferedImage.TYPE_BYTE_GRAY;
-        if (mat.channels() > 1) {
-            type = BufferedImage.TYPE_3BYTE_BGR;
-        }
-
-        int bufferSize = mat.channels() * mat.cols() * mat.rows();
-        byte[] buffer = new byte[bufferSize];
-        mat.get(0, 0, buffer);
-
+        int type = (mat.channels() > 1) ? BufferedImage.TYPE_3BYTE_BGR : BufferedImage.TYPE_BYTE_GRAY;
         BufferedImage image = new BufferedImage(mat.cols(), mat.rows(), type);
-        final byte[] targetPixels = ((DataBufferByte) image.getRaster().getDataBuffer()).getData();
-        System.arraycopy(buffer, 0, targetPixels, 0, buffer.length);
-
+        mat.get(0, 0, ((DataBufferByte) image.getRaster().getDataBuffer()).getData());
         return image;
     }
 
     /**
-     * 停止攝影機
+     * 切換播放/暫停
      */
-    private void stopCamera() {
-        isRunning = false;
+    private void togglePlayPause() {
+        isPaused = !isPaused;
+        playPauseBtn.setText(isPaused ? "▶ 播放" : "⏸ 暫停");
+    }
 
-        if (captureThread != null) {
-            try {
-                captureThread.join(1000);
-            } catch (InterruptedException e) {
-                log.error("等待執行緒終止時發生錯誤", e);
+    /**
+     * 跳轉到指定影格
+     */
+    private void seekToFrame(int frameNumber) {
+        isSeeking = true;
+        synchronized (videoLock) {
+            if (camera != null && camera.isOpened()) {
+                camera.set(Videoio.CAP_PROP_POS_FRAMES, frameNumber);
+                currentFrame = frameNumber;
+
+                Mat frame = new Mat();
+                if (camera.read(frame) && !frame.empty()) {
+                    processFrame(frame);
+                }
+                frame.release();
             }
         }
+        isSeeking = false;
+        updateFrameInfo();
+    }
 
-        if (camera != null && camera.isOpened()) {
-            camera.release();
-        }
-
-        videoLabel.setIcon(null);
-        videoLabel.setText("攝影機已停止");
-
-        log.info("攝影機已停止");
+    /**
+     * 更新影格資訊
+     */
+    private void updateFrameInfo() {
+        frameInfoLabel.setText(currentFrame + " / " + totalFrames);
     }
 
     /**
      * 擷取畫面
      */
     private void captureImage() {
-        if (camera == null || !camera.isOpened()) {
-            JOptionPane.showMessageDialog(this,
-                    "請先啟動攝影機！",
-                    "提示", JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-
-        Mat frame = new Mat();
-        if (camera.read(frame)) {
-            String dir = "capture_photo";
-            File dirFile = new File(dir);
-            if (!dirFile.exists()) {
-                dirFile.mkdirs();
+        synchronized (videoLock) {
+            if (camera == null || !camera.isOpened()) {
+                JOptionPane.showMessageDialog(this, "請先載入影片");
+                return;
             }
 
-            String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-            String filename = String.format("%s/ftc_capture_%s.jpg", dir, timestamp);
+            Mat frame = new Mat();
+            camera.set(Videoio.CAP_PROP_POS_FRAMES, currentFrame);
+            if (camera.read(frame) && !frame.empty()) {
+                String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+                String filename = "capture_" + timestamp + ".jpg";
 
-            Imgcodecs.imwrite(filename, frame);
-            log.info("畫面已儲存: {}", filename);
-            JOptionPane.showMessageDialog(this,
-                    "畫面已儲存: " + filename,
-                    "成功", JOptionPane.INFORMATION_MESSAGE);
+                File captureDir = new File("captures");
+                if (!captureDir.exists())
+                    captureDir.mkdirs();
+
+                String path = captureDir.getPath() + File.separator + filename;
+                Imgcodecs.imwrite(path, frame);
+                addEventLog("畫面已擷取: " + filename);
+            }
+            frame.release();
         }
-
-        frame.release();
     }
 
     /**
-     * 開始比賽
+     * 停止影片
      */
-    private void startMatch() {
-        scoringEngine.startMatch();
-        cycleAnalyzer.reset();
-        updateMatchInfo();
-        updateScoreboards();
-        addEventLog("比賽開始！");
-        log.info("比賽開始");
-    }
+    private void stopVideo() {
+        isRunning = false;
 
-    /**
-     * 結束比賽
-     */
-    private void endMatch() {
-        scoringEngine.endMatch();
-        updateMatchInfo();
-        updateScoreboards();
-        addEventLog("比賽結束！最終分數 - 紅:" +
-                scoringEngine.getMatchState().getRedScore().getTotalScore() +
-                " 藍:" + scoringEngine.getMatchState().getBlueScore().getTotalScore());
-        log.info("比賽結束");
-    }
-
-    /**
-     * 清空坡道
-     */
-    private void clearRamp() {
-        scoringEngine.clearRamp();
-        updateMatchInfo();
-        addEventLog("坡道已清空");
-    }
-
-    /**
-     * 手動計分
-     */
-    private void manualScore(Alliance alliance) {
-        // 隨機選擇文物類型
-        ArtifactType type = Math.random() > 0.5 ? ArtifactType.PURPLE : ArtifactType.GREEN;
-        scoringEngine.scoreClassified(alliance, type);
-        updateScoreboards();
-        updateMatchInfo();
-        addEventLog(String.format("%s +3 分 (%s)", alliance.getDisplayName(), type.getDisplayName()));
-    }
-
-    /**
-     * 更新比賽資訊顯示
-     */
-    private void updateMatchInfo() {
-        MatchState state = scoringEngine.getMatchState();
-
-        timeLabel.setText(state.getTimeString());
-        phaseLabel.setText(state.getCurrentPhase().getDisplayName());
-        motifLabel.setText(state.getDetectedMotif().getPattern());
-
-        int rampCount = state.getRampArtifacts().size();
-        rampLabel.setText(rampCount + "/" + MatchState.RAMP_CAPACITY);
-        rampProgressBar.setValue(rampCount);
-        rampProgressBar.setString(rampCount + "/" + MatchState.RAMP_CAPACITY);
-
-        // 更新計分板
-        updateScoreboards();
-    }
-
-    /**
-     * 更新計分板
-     */
-    private void updateScoreboards() {
-        redScorePanel.updateScore(scoringEngine.getMatchState().getRedScore());
-        blueScorePanel.updateScore(scoringEngine.getMatchState().getBlueScore());
-    }
-
-    /**
-     * 新增事件記錄
-     * /**
-     * 偵測紅色和藍色柱子並建立得分區
-     */
-    private void detectColoredPillars(Mat frame, int frameWidth, int frameHeight) {
-        Mat hsv = new Mat();
-        Imgproc.cvtColor(frame, hsv, Imgproc.COLOR_BGR2HSV);
-
-        // 紅色 HSV 範圍 (紅色跨越 0 和 180 度)
-        Mat redMask1 = new Mat();
-        Mat redMask2 = new Mat();
-        Core.inRange(hsv, new Scalar(0, 100, 100), new Scalar(10, 255, 255), redMask1);
-        Core.inRange(hsv, new Scalar(160, 100, 100), new Scalar(180, 255, 255), redMask2);
-        Mat redMask = new Mat();
-        Core.add(redMask1, redMask2, redMask);
-
-        // 藍色 HSV 範圍
-        Mat blueMask = new Mat();
-        Core.inRange(hsv, new Scalar(100, 100, 100), new Scalar(130, 255, 255), blueMask);
-
-        // 型態學處理
-        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(15, 15));
-        Imgproc.morphologyEx(redMask, redMask, Imgproc.MORPH_OPEN, kernel);
-        Imgproc.morphologyEx(redMask, redMask, Imgproc.MORPH_CLOSE, kernel);
-        Imgproc.morphologyEx(blueMask, blueMask, Imgproc.MORPH_OPEN, kernel);
-        Imgproc.morphologyEx(blueMask, blueMask, Imgproc.MORPH_CLOSE, kernel);
-
-        // 尋找紅色柱子 (坡道區)
-        Rect redZoneBounds = findLargestColoredRegion(redMask, frameWidth, frameHeight);
-        if (redZoneBounds != null) {
-            com.telearn.ftc.model.ScoringZone redZone = new com.telearn.ftc.model.ScoringZone(
-                    1, "紅方坡道", com.telearn.ftc.model.Alliance.RED, redZoneBounds);
-            scoringZones.add(redZone);
-            addEventLog("偵測到紅方坡道區 (" + redZoneBounds.x + ", " + redZoneBounds.y + ")");
-        }
-
-        // 尋找藍色柱子 (坡道區)
-        Rect blueZoneBounds = findLargestColoredRegion(blueMask, frameWidth, frameHeight);
-        if (blueZoneBounds != null) {
-            com.telearn.ftc.model.ScoringZone blueZone = new com.telearn.ftc.model.ScoringZone(
-                    2, "藍方坡道", com.telearn.ftc.model.Alliance.BLUE, blueZoneBounds);
-            scoringZones.add(blueZone);
-            addEventLog("偵測到藍方坡道區 (" + blueZoneBounds.x + ", " + blueZoneBounds.y + ")");
-        }
-
-        if (!scoringZones.isEmpty()) {
-            autoScoring = true;
-            addEventLog("得分區偵測完成，共 " + scoringZones.size() + " 個區域");
-        }
-
-        // 釋放資源
-        hsv.release();
-        redMask1.release();
-        redMask2.release();
-        redMask.release();
-        blueMask.release();
-        kernel.release();
-    }
-
-    /**
-     * 找出最大的有色區域並建立得分區範圍
-     */
-    private Rect findLargestColoredRegion(Mat mask, int frameWidth, int frameHeight) {
-        List<MatOfPoint> contours = new java.util.ArrayList<>();
-        Mat hierarchy = new Mat();
-        Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-
-        double maxArea = 0;
-        Rect largestRect = null;
-
-        for (MatOfPoint contour : contours) {
-            double area = Imgproc.contourArea(contour);
-            // 過濾太小的區域 (至少佔畫面 0.5%)
-            if (area > frameWidth * frameHeight * 0.005 && area > maxArea) {
-                maxArea = area;
-                Rect boundingRect = Imgproc.boundingRect(contour);
-                // 擴大區域作為坡道檢測範圍
-                int expandX = (int) (boundingRect.width * 0.5);
-                int expandY = (int) (boundingRect.height * 0.3);
-                int newX = Math.max(0, boundingRect.x - expandX);
-                int newY = Math.max(0, boundingRect.y - expandY);
-                int newWidth = Math.min(frameWidth - newX, boundingRect.width + expandX * 2);
-                int newHeight = Math.min(frameHeight - newY, boundingRect.height + expandY * 2);
-                largestRect = new Rect(newX, newY, newWidth, newHeight);
+        if (captureThread != null) {
+            try {
+                captureThread.join(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }
 
-        hierarchy.release();
-        return largestRect;
+        synchronized (videoLock) {
+            if (camera != null) {
+                camera.release();
+                camera = null;
+            }
+        }
+
+        log.info("影片已停止");
     }
 
     /**
@@ -1192,18 +746,18 @@ public class FTCMainWindow extends JFrame {
      */
     private void addEventLog(String message) {
         String timestamp = new SimpleDateFormat("HH:mm:ss").format(new Date());
-        eventLogArea.append(String.format("[%s] %s\n", timestamp, message));
-        eventLogArea.setCaretPosition(eventLogArea.getDocument().getLength());
+        SwingUtilities.invokeLater(() -> {
+            eventLogArea.append(String.format("[%s] %s\n", timestamp, message));
+            eventLogArea.setCaretPosition(eventLogArea.getDocument().getLength());
+        });
     }
 
     /**
      * 清理資源
      */
     private void cleanup() {
-        stopCamera();
+        stopVideo();
         artifactDetector.release();
-        robotDetector.release();
-        zoneDetector.release();
         aprilTagDetector.release();
         log.info("資源已清理");
     }
@@ -1212,16 +766,100 @@ public class FTCMainWindow extends JFrame {
      * 程式進入點
      */
     public static void main(String[] args) {
-        // 設定外觀
-        try {
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-        } catch (Exception e) {
-            log.warn("無法設定系統外觀", e);
+        SwingUtilities.invokeLater(() -> {
+            try {
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            } catch (Exception e) {
+                log.warn("無法設定系統外觀");
+            }
+            new FTCMainWindow().setVisible(true);
+        });
+    }
+
+    // ===== 內部類別 =====
+
+    /**
+     * 球門區域
+     */
+    private static class GoalArea {
+        Alliance alliance;
+        Rect bounds;
+        org.opencv.core.Point aprilTagCenter;
+
+        GoalArea(Alliance alliance, Rect bounds, org.opencv.core.Point aprilTagCenter) {
+            this.alliance = alliance;
+            this.bounds = bounds;
+            this.aprilTagCenter = aprilTagCenter;
         }
 
-        SwingUtilities.invokeLater(() -> {
-            FTCMainWindow window = new FTCMainWindow();
-            window.setVisible(true);
-        });
+        boolean contains(org.opencv.core.Point p) {
+            return p.x >= bounds.x && p.x <= bounds.x + bounds.width &&
+                    p.y >= bounds.y && p.y <= bounds.y + bounds.height;
+        }
+    }
+
+    /**
+     * 斜坡狀態
+     */
+    private static class RampState {
+        Alliance alliance;
+        ArtifactType[] artifacts = new ArtifactType[9];
+        int count = 0;
+        java.util.Set<String> scoredPositions = new java.util.HashSet<>();
+
+        RampState(Alliance alliance) {
+            this.alliance = alliance;
+        }
+
+        boolean addArtifact(ArtifactType type) {
+            if (count >= 9)
+                return false;
+
+            // 使用簡單的時間戳防止重複計分
+            String key = System.currentTimeMillis() / 500 + ""; // 0.5秒內不重複
+            if (scoredPositions.contains(key))
+                return false;
+            scoredPositions.add(key);
+
+            // 清理舊的 key (保留最近 20 個)
+            if (scoredPositions.size() > 20) {
+                scoredPositions.clear();
+            }
+
+            artifacts[count++] = type;
+            return true;
+        }
+
+        int getCount() {
+            return count;
+        }
+
+        ArtifactType[] getArtifacts() {
+            return artifacts;
+        }
+
+        int countPatternMatches(Motif motif) {
+            if (motif == Motif.UNKNOWN || count < 3)
+                return 0;
+
+            char[] pattern = motif.getPattern().toCharArray();
+            int matches = 0;
+
+            for (int i = 0; i < Math.min(3, count); i++) {
+                if (artifacts[i] != null) {
+                    char expected = pattern[i];
+                    char actual = artifacts[i] == ArtifactType.PURPLE ? 'P' : 'G';
+                    if (expected == actual)
+                        matches++;
+                }
+            }
+            return matches;
+        }
+
+        void reset() {
+            artifacts = new ArtifactType[9];
+            count = 0;
+            scoredPositions.clear();
+        }
     }
 }
